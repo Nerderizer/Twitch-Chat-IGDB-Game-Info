@@ -1,0 +1,199 @@
+/*
+ * Author: UserID10T
+ * Version: 1.0
+ * Date: May 16, 2024
+ * 
+ * Description:
+ * This code is part of the 'Get Current Game Info' extension. It retrieves the current game information 
+ * for a Twitch broadcaster using the IGDB (Internet Game Database) API. The information includes the game name, 
+ * developer name, release date, summary, genres, and websites. The code uses global variables to determine 
+ * which pieces of information to include in the output.
+ *
+ * You may set preferred game details in the Streamer.bot interface under the sub-actions CUSTOMIZE GAME DETAILS 
+ * category before the code is executed. Update the Trigger(s) with your preferred trigger method.
+ *
+ * This code is designed to be used with Streamer.bot and requires the Streamer.bot libraries to run.
+ */
+ 
+using System;
+using System.Net.Http;
+using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
+using System.Text;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+
+public class CPHInline
+{
+    private static readonly HttpClient igdbClient = new HttpClient();
+    public bool Execute()
+    {
+        try
+        {
+            CPH.LogInfo("Execute method started.");
+            var broadcaster = CPH.TwitchGetBroadcaster();
+            CPH.LogInfo($"Broadcaster: {broadcaster.UserName}");
+            var targetInfo = CPH.TwitchGetExtendedUserInfoById(broadcaster.UserId);
+            string gameName = targetInfo.Game;
+            CPH.LogInfo($"Game Name: {gameName}");
+            if (string.IsNullOrEmpty(gameName))
+            {
+                CPH.SendMessage("❌ No game name found.");
+                return false;
+            }
+
+            string twitchToken = CPH.TwitchOAuthToken; // Added as default from SB
+            string twitchClientId = CPH.TwitchClientId; // Added as default from SB
+            // Call the IGDB API to search for the game by name
+            string igdbUrl = "https://api.igdb.com/v4/games";
+            string igdbQuery = $"fields name, genres.name, summary, game_modes.name, involved_companies.company.name, release_dates.date, websites.url; search \"{gameName}\"; where version_parent = null & name = \"{gameName}\"; limit 1;";
+            var igdbContent = new StringContent(igdbQuery);
+            igdbContent.Headers.Clear();
+            igdbContent.Headers.Add("Content-Type", "text/plain");
+            igdbClient.DefaultRequestHeaders.Clear();
+            igdbClient.DefaultRequestHeaders.Add("Client-ID", twitchClientId);
+            igdbClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {twitchToken}");
+            HttpResponseMessage igdbResponse = igdbClient.PostAsync(igdbUrl, igdbContent).Result;
+            string igdbData = igdbResponse.Content.ReadAsStringAsync().Result;
+            CPH.LogInfo($"IGDB Response: {igdbData}");
+            JArray igdbJson = JArray.Parse(igdbData); // Parse the response data
+            if (igdbJson != null && igdbJson.Count > 0)
+            {
+                JObject game = (JObject)igdbJson[0];
+                SendGameDetails(game, gameName, args);
+            }
+            else
+            {
+                CPH.SendMessage($"❌ No game found with the name {gameName}.");
+            }
+
+            return true;
+        }
+        catch (HttpRequestException ex)
+        {
+            CPH.LogInfo($"HTTP Request Error: {ex.Message}");
+            CPH.SendMessage($"❌ HTTP Request Error: {ex.Message}");
+            return false;
+        }
+        catch (JsonReaderException ex)
+        {
+            CPH.LogInfo($"JSON Parsing Error: {ex.Message}");
+            CPH.SendMessage($"❌ JSON Parsing Error: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            CPH.LogInfo($"Error: {ex.Message}");
+            CPH.SendMessage($"❌ Error: {ex.Message}");
+            return false;
+        }
+    }
+
+    private string UnixTimeStampToDateTime(string unixTimeStamp)
+    {
+        if (string.IsNullOrEmpty(unixTimeStamp))
+        {
+            return null;
+        }
+
+        double unixTimeStampValue = Convert.ToDouble(unixTimeStamp);
+        // Unix timestamp is seconds past epoch
+        DateTime dateTime = new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc);
+        dateTime = dateTime.AddSeconds(unixTimeStampValue).ToLocalTime();
+        return dateTime.ToString("MM/dd/yyyy");
+    }
+
+    private void SendGameDetails(JObject game, string gameName, Dictionary<string, object> args)
+    {
+        // Prepare game details for output
+        StringBuilder gameDetails = new StringBuilder();
+        if (args["addGameName"].ToString() == "1")
+        {
+            AppendDetail(gameDetails, $"🎮 Game Name: {gameName}");
+        }
+        else
+        {
+            CPH.LogInfo("Global variable 'addGameName' is not true.");
+        }
+
+        if (args["addDeveloperName"].ToString() == "1")
+        {
+            string developerName = game["involved_companies"]?[0]["company"]["name"]?.ToString();
+            AppendDetail(gameDetails, $"👨‍💻 Developer: {developerName ?? "Unknown"}");
+        }
+        else
+        {
+            CPH.LogInfo("Global variable 'addDeveloperName' is not true.");
+        }
+
+        if (args["addReleaseDate"].ToString() == "1")
+        {
+            string releaseDate = game["release_dates"]?[0]?["date"]?.ToString();
+            string formattedReleaseDate = UnixTimeStampToDateTime(releaseDate);
+            AppendDetail(gameDetails, $"📅 Released: {formattedReleaseDate ?? "Unknown"}");
+        }
+        else
+        {
+            CPH.LogInfo("Global variable 'addReleaseDate' is not true.");
+        }
+
+        if (args["addSummary"].ToString() == "1")
+        {
+            string gameSummary = game["summary"]?.ToString();
+            AppendDetail(gameDetails, $"ℹ️ Summary: {gameSummary ?? "Unknown"}");
+        }
+        else
+        {
+            CPH.LogInfo("Global variable 'addSummary' is not true.");
+        }
+
+        if (args["addGenres"].ToString() == "1")
+        {
+            JArray gameGenres = (JArray)game["genres"];
+            if (gameGenres != null)
+            {
+                AppendDetail(gameDetails, $"🔖 Genres: {string.Join(", ", gameGenres.Select(g => g["name"].ToString()))}");
+            }
+        }
+        else
+        {
+            CPH.LogInfo("Global variable 'addGenres' is not true.");
+        }
+
+        if (args["addWebsites"].ToString() == "1")
+        {
+            JArray gameWebsites = (JArray)game["websites"];
+            string steamUrl = gameWebsites?.FirstOrDefault(website => website["url"]?.ToString().Contains("store.steampowered.com") == true)?["url"]?.ToString();
+            if (steamUrl != null)
+            {
+                AppendDetail(gameDetails, $"🌐 Steam Page: {steamUrl}");
+            }
+        }
+        else
+        {
+            CPH.LogInfo("Global variable 'addWebsites' is not true.");
+        }
+
+        if (gameDetails.Length > 0)
+        {
+            CPH.SendMessage(gameDetails.ToString());
+        }
+    }
+
+    private void AppendDetail(StringBuilder gameDetails, string detail)
+    {
+        if (gameDetails.Length + detail.Length + 3 > 475) // +3 for " | "
+        {
+            CPH.SendMessage(gameDetails.ToString());
+            gameDetails.Clear();
+        }
+
+        if (gameDetails.Length > 0)
+        {
+            gameDetails.Append(" | ");
+        }
+
+        gameDetails.Append(detail);
+    }
+}
